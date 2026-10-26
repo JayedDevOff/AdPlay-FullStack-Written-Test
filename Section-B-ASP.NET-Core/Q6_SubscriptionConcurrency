@@ -1,0 +1,39 @@
+
+public async Task<IActionResult> Subscribe(string mobile)
+{
+    await using var transaction = await db.Database.BeginTransactionAsync();
+
+    try
+    {
+        var user = await db.Users
+            .FromSqlInterpolated(
+                $"SELECT * FROM Users WHERE Mobile = {mobile} FOR UPDATE")
+            .FirstOrDefaultAsync();
+
+        if (user == null)
+            return NotFound(new { message = "User not found." });
+
+        if (user.IsSubscribed)
+        {
+            await transaction.CommitAsync();
+            return Ok(new { message = "User is already subscribed." });
+        }
+
+        user.IsSubscribed = true;
+
+        await db.SaveChangesAsync();
+        await transaction.CommitAsync();
+
+        return Ok(new { message = "Subscription successful." });
+    }
+    catch (DbUpdateConcurrencyException)
+    {
+        await transaction.RollbackAsync();
+        return Conflict(new { message = "Subscription state changed. Please retry." });
+    }
+    catch
+    {
+        await transaction.RollbackAsync();
+        throw;
+    }
+}

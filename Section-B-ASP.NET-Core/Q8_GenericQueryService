@@ -1,0 +1,85 @@
+
+public interface IRepository<TEntity> where TEntity : class
+{
+    Task<TEntity?> GetByIdAsync(object id, CancellationToken cancellationToken);
+
+    Task<List<TResult>> GetAsync<TResult>(
+        Expression<Func<TEntity, bool>>? filter,
+        Expression<Func<TEntity, object>>? orderBy,
+        bool descending,
+        int page,
+        int pageSize,
+        Expression<Func<TEntity, TResult>> selector,
+        CancellationToken cancellationToken);
+
+    Task AddAsync(TEntity entity, CancellationToken cancellationToken);
+
+    void Update(TEntity entity);
+
+    void Remove(TEntity entity);
+
+    Task<int> SaveChangesAsync(CancellationToken cancellationToken);
+}
+
+public class Repository<TEntity> : IRepository<TEntity>
+    where TEntity : class
+{
+    private readonly AppDbContext _db;
+    private readonly DbSet<TEntity> _set;
+
+    public Repository(AppDbContext db)
+    {
+        _db = db;
+        _set = db.Set<TEntity>();
+    }
+
+    public async Task<TEntity?> GetByIdAsync(
+        object id,
+        CancellationToken cancellationToken)
+    {
+        return await _set.FindAsync(new[] { id }, cancellationToken);
+    }
+
+    public async Task<List<TResult>> GetAsync<TResult>(
+        Expression<Func<TEntity, bool>>? filter,
+        Expression<Func<TEntity, object>>? orderBy,
+        bool descending,
+        int page,
+        int pageSize,
+        Expression<Func<TEntity, TResult>> selector,
+        CancellationToken cancellationToken)
+    {
+        IQueryable<TEntity> query = _set.AsNoTracking();
+
+        if (filter != null)
+            query = query.Where(filter);
+
+        if (orderBy != null)
+            query = descending
+                ? query.OrderByDescending(orderBy)
+                : query.OrderBy(orderBy);
+
+        page = Math.Max(page, 1);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+
+        return await query
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(selector)
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task AddAsync(
+        TEntity entity,
+        CancellationToken cancellationToken)
+    {
+        await _set.AddAsync(entity, cancellationToken);
+    }
+
+    public void Update(TEntity entity) => _set.Update(entity);
+
+    public void Remove(TEntity entity) => _set.Remove(entity);
+
+    public Task<int> SaveChangesAsync(CancellationToken cancellationToken)
+        => _db.SaveChangesAsync(cancellationToken);
+}

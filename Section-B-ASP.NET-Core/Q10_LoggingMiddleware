@@ -1,0 +1,87 @@
+
+using System.Diagnostics;
+
+public sealed class RequestLoggingMiddleware
+{
+    private readonly RequestDelegate _next;
+    private readonly ILogger<RequestLoggingMiddleware> _logger;
+
+    public RequestLoggingMiddleware(
+        RequestDelegate next,
+        ILogger<RequestLoggingMiddleware> logger)
+    {
+        _next = next;
+        _logger = logger;
+    }
+
+    public async Task InvokeAsync(HttpContext context)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        var correlationId = context.Request.Headers["X-Correlation-ID"].FirstOrDefault();
+
+        if (string.IsNullOrWhiteSpace(correlationId) || correlationId.Length > 100)
+            correlationId = context.TraceIdentifier;
+
+        context.Response.Headers["X-Correlation-ID"] = correlationId;
+
+        try
+        {
+            _logger.LogInformation(
+                "Request started. CorrelationId: {CorrelationId}, Method: {Method}, Path: {Path}",
+                correlationId,
+                context.Request.Method,
+                context.Request.Path);
+
+            await _next(context);
+        }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+        {
+            _logger.LogInformation(
+                "Request cancelled. CorrelationId: {CorrelationId}",
+                correlationId);
+
+            throw;
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(
+                exception,
+                "Unhandled exception. CorrelationId: {CorrelationId}",
+                correlationId);
+
+            throw;
+        }
+        finally
+        {
+            stopwatch.Stop();
+
+            _logger.LogInformation(
+                "Request completed. CorrelationId: {CorrelationId}, StatusCode: {StatusCode}, ElapsedMs: {ElapsedMs}",
+                correlationId,
+                context.Response.StatusCode,
+                stopwatch.ElapsedMilliseconds);
+        }
+    }
+}
+
+public static class RequestLoggingExtensions
+{
+    public static IApplicationBuilder UseRequestLogging(
+        this IApplicationBuilder app)
+    {
+        return app.UseMiddleware<RequestLoggingMiddleware>();
+    }
+}
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddControllers();
+
+var app = builder.Build();
+
+app.UseRequestLogging();
+app.UseHttpsRedirection();
+app.UseAuthorization();
+app.MapControllers();
+
+app.Run();

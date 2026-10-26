@@ -1,0 +1,118 @@
+
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+
+public class Product
+{
+    public long Id { get; set; }
+    public string Name { get; set; } = "";
+    public string Category { get; set; } = "";
+    public string Brand { get; set; } = "";
+    public decimal Price { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+public record ProductDto(
+    long Id,
+    string Name,
+    string Category,
+    string Brand,
+    decimal Price,
+    DateTime CreatedAt);
+
+public record PagedResult<T>(
+    IReadOnlyList<T> Items,
+    int Page,
+    int PageSize,
+    long TotalCount);
+
+[ApiController]
+[Route("api/products")]
+public class ProductsController : ControllerBase
+{
+    private readonly AppDbContext _db;
+
+    public ProductsController(AppDbContext db)
+    {
+        _db = db;
+    }
+
+    [HttpGet]
+    public async Task<ActionResult<PagedResult<ProductDto>>> Search(
+        [FromQuery] string? search,
+        [FromQuery] decimal? minPrice,
+        [FromQuery] decimal? maxPrice,
+        [FromQuery] string[]? categories,
+        [FromQuery] string[]? brands,
+        [FromQuery] string sortBy = "createdAt",
+        [FromQuery] string sortDirection = "desc",
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        CancellationToken cancellationToken = default)
+    {
+        if (page < 1 || pageSize < 1 || pageSize > 100)
+            return BadRequest("Invalid pagination values.");
+
+        if (minPrice < 0 || maxPrice < 0 ||
+            (minPrice.HasValue && maxPrice.HasValue && minPrice > maxPrice))
+            return BadRequest("Invalid price range.");
+
+        if (!new[] { "name", "price", "createdAt", "id" }
+            .Contains(sortBy, StringComparer.OrdinalIgnoreCase))
+            return BadRequest("Invalid sort field.");
+
+        if (!new[] { "asc", "desc" }
+            .Contains(sortDirection, StringComparer.OrdinalIgnoreCase))
+            return BadRequest("Invalid sort direction.");
+
+        IQueryable<Product> query = _db.Products.AsNoTracking();
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var keyword = search.Trim();
+            query = query.Where(p => p.Name.Contains(keyword));
+        }
+
+        if (categories is { Length: > 0 })
+            query = query.Where(p => categories.Contains(p.Category));
+
+        if (brands is { Length: > 0 })
+            query = query.Where(p => brands.Contains(p.Brand));
+
+        if (minPrice.HasValue)
+            query = query.Where(p => p.Price >= minPrice.Value);
+
+        if (maxPrice.HasValue)
+            query = query.Where(p => p.Price <= maxPrice.Value);
+
+        var totalCount = await query.LongCountAsync(cancellationToken);
+
+        query = (sortBy.ToLowerInvariant(), sortDirection.ToLowerInvariant()) switch
+        {
+            ("name", "asc") => query.OrderBy(p => p.Name).ThenBy(p => p.Id),
+            ("name", "desc") => query.OrderByDescending(p => p.Name).ThenBy(p => p.Id),
+            ("price", "asc") => query.OrderBy(p => p.Price).ThenBy(p => p.Id),
+            ("price", "desc") => query.OrderByDescending(p => p.Price).ThenBy(p => p.Id),
+            ("createdat", "asc") => query.OrderBy(p => p.CreatedAt).ThenBy(p => p.Id),
+            ("createdat", "desc") => query.OrderByDescending(p => p.CreatedAt).ThenBy(p => p.Id),
+            ("id", "asc") => query.OrderBy(p => p.Id),
+            ("id", "desc") => query.OrderByDescending(p => p.Id),
+            _ => query
+        };
+
+        var items = await query
+            .Skip((int)Math.Min(((long)page - 1) * pageSize, int.MaxValue))
+            .Take(pageSize)
+            .Select(p => new ProductDto(
+                p.Id,
+                p.Name,
+                p.Category,
+                p.Brand,
+                p.Price,
+                p.CreatedAt))
+            .ToListAsync(cancellationToken);
+
+        return Ok(new PagedResult<ProductDto>(
+            items, page, pageSize, totalCount));
+    }
+}
